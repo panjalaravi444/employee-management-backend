@@ -1,0 +1,979 @@
+# Backend Code Explained - Beginner's Guide
+
+This document explains the Employee Management System backend code step by step, assuming you're new to Spring Boot and backend development.
+
+## Table of Contents
+- [What is This Project?](#what-is-this-project)
+- [Architecture Overview](#architecture-overview)
+- [Key Concepts](#key-concepts)
+- [Project Layers Explained](#project-layers-explained)
+- [How a Request Flows Through the System](#how-a-request-flows-through-the-system)
+- [Authentication Explained](#authentication-explained)
+- [Code Breakdown by Layer](#code-breakdown-by-layer)
+
+---
+
+## What is This Project?
+
+This is a **REST API** built with **Spring Boot** that manages employees and departments. Think of it as a backend service that:
+- Stores employee information in a database
+- Provides endpoints (URLs) for frontend apps to interact with
+- Secures access using JWT (JSON Web Token) authentication
+
+**Real-world analogy:** It's like the backend server of a company's HR system where you can add, view, update, and delete employee records.
+
+---
+
+## Architecture Overview
+
+The project follows the **MVC (Model-View-Controller)** pattern, adapted for REST APIs:
+
+```
+┌─────────────┐
+│   Client    │  (Frontend app, Postman, browser)
+└──────┬──────┘
+       │ HTTP Request
+       ▼
+┌─────────────────────────────────────┐
+│      Controller Layer               │  ← Handles HTTP requests
+│  (EmployeeController.java)          │
+└──────┬──────────────────────────────┘
+       │ Calls service
+       ▼
+┌─────────────────────────────────────┐
+│      Service Layer                  │  ← Business logic
+│  (EmployeeService.java)             │
+└──────┬──────────────────────────────┘
+       │ Calls repository
+       ▼
+┌─────────────────────────────────────┐
+│      Repository Layer               │  ← Database operations
+│  (EmployeeRepository.java)          │
+└──────┬──────────────────────────────┘
+       │ SQL queries
+       ▼
+┌─────────────────────────────────────┐
+│      Database                       │  (PostgreSQL)
+│  (employees, departments tables)    │
+└─────────────────────────────────────┘
+```
+
+---
+
+## Key Concepts
+
+### 1. **Entity**
+An Entity represents a table in the database. It's a Java class that maps to a database table.
+
+**Example:** `Employee.java` maps to the `employees` table in PostgreSQL.
+
+### 2. **Repository**
+A Repository is an interface that provides methods to interact with the database. Spring Data JPA automatically generates the SQL queries for you.
+
+**Example:** `EmployeeRepository` has methods like `findAll()`, `save()`, `findById()`.
+
+### 3. **Service**
+A Service contains business logic. It's where you put rules like "check if email already exists before creating employee."
+
+**Example:** `EmployeeService` validates data before saving to database.
+
+### 4. **Controller**
+A Controller handles HTTP requests. It receives requests from clients, calls the service, and returns responses.
+
+**Example:** `EmployeeController` has endpoints like `/v1/employees` that respond to GET, POST, PUT, DELETE requests.
+
+### 5. **DTO (Data Transfer Object)**
+A DTO is a simple object used to transfer data between layers. It doesn't contain database logic.
+
+**Example:** `EmployeeDTO` is used to send employee data to/from the client without exposing internal entity details.
+
+---
+
+## Project Layers Explained
+
+### Layer 1: Entity (Database Models)
+
+**File:** `Employee.java`
+
+```java
+@Entity
+@Table(name = "employees")
+public class Employee {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;  // Primary key, auto-generated
+    
+    @NotBlank(message = "First name is required")
+    private String firstName;
+    
+    @Email(message = "Email should be valid")
+    private String email;
+    
+    // ... other fields
+}
+```
+
+**What this does:**
+- `@Entity` tells Spring "this class represents a database table"
+- `@Table(name = "employees")` specifies the table name
+- `@Id` marks the primary key
+- `@GeneratedValue` means the database auto-generates this ID
+- `@NotBlank`, `@Email` are validation rules
+
+**Think of it as:** A blueprint for what an employee record looks like in the database.
+
+---
+
+### Layer 2: Repository (Data Access)
+
+**File:** `EmployeeRepository.java`
+
+```java
+@Repository
+public interface EmployeeRepository extends JpaRepository<Employee, Long> {
+    
+    Optional<Employee> findByEmail(String email);
+    
+    List<Employee> findByDepartmentId(Long departmentId);
+    
+    @Query("SELECT e FROM Employee e WHERE e.isActive = true")
+    List<Employee> findAllActive();
+}
+```
+
+**What this does:**
+- `@Repository` marks this as a data access component
+- `JpaRepository<Employee, Long>` provides built-in methods like:
+  - `save()` - insert or update
+  - `findAll()` - get all records
+  - `findById()` - get one record by ID
+  - `delete()` - remove a record
+- Custom methods like `findByEmail()` are automatically generated by Spring
+- `@Query` allows writing custom SQL queries
+
+**Think of it as:** A librarian that knows how to find, add, and remove books from the database.
+
+---
+
+### Layer 3: Service (Business Logic)
+
+**File:** `EmployeeService.java`
+
+```java
+@Service
+@Transactional
+public class EmployeeService {
+    
+    @Autowired
+    private EmployeeRepository employeeRepository;
+    
+    public EmployeeDTO createEmployee(EmployeeDTO employeeDTO) {
+        // Business logic: Check if email already exists
+        if (employeeRepository.findByEmail(employeeDTO.getEmail()).isPresent()) {
+            throw new BadRequestException("Email already exists");
+        }
+        
+        // Convert DTO to Entity
+        Employee employee = modelMapper.map(employeeDTO, Employee.class);
+        
+        // Save to database
+        Employee savedEmployee = employeeRepository.save(employee);
+        
+        // Convert back to DTO and return
+        return mapToDTO(savedEmployee);
+    }
+}
+```
+
+**What this does:**
+- `@Service` marks this as a business logic component
+- `@Transactional` ensures all database operations succeed or fail together
+- `@Autowired` injects the repository (Spring creates it automatically)
+- Contains validation rules and business logic
+- Converts between Entity and DTO
+
+**Think of it as:** The manager who decides what's allowed and coordinates the work.
+
+---
+
+### Layer 4: Controller (API Endpoints)
+
+**File:** `EmployeeController.java`
+
+```java
+@RestController
+@RequestMapping("/v1/employees")
+public class EmployeeController {
+    
+    @Autowired
+    private EmployeeService employeeService;
+    
+    @PostMapping
+    public ResponseEntity<ApiResponse<EmployeeDTO>> createEmployee(
+            @Valid @RequestBody EmployeeDTO employeeDTO) {
+        
+        EmployeeDTO createdEmployee = employeeService.createEmployee(employeeDTO);
+        
+        return ResponseEntity
+                .status(HttpStatus.CREATED)
+                .body(ApiResponse.success("Employee created successfully", createdEmployee));
+    }
+    
+    @GetMapping
+    public ResponseEntity<ApiResponse<List<EmployeeDTO>>> getAllEmployees() {
+        List<EmployeeDTO> employees = employeeService.getAllEmployees();
+        return ResponseEntity.ok(ApiResponse.success("All employees fetched successfully", employees));
+    }
+}
+```
+
+**What this does:**
+- `@RestController` tells Spring "this class handles HTTP requests"
+- `@RequestMapping("/v1/employees")` sets the base URL for all endpoints
+- `@PostMapping` maps HTTP POST requests to this method
+- `@GetMapping` maps HTTP GET requests to this method
+- `@RequestBody` extracts data from the request body
+- `@Valid` triggers validation
+- `ResponseEntity` allows setting HTTP status codes
+
+**Think of it as:** The receptionist that receives requests from clients and gives them responses.
+
+---
+
+## How a Request Flows Through the System
+
+Let's trace what happens when a client wants to create an employee:
+
+### Step 1: Client Sends Request
+```
+POST http://localhost:8080/api/v1/employees
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+{
+  "firstName": "John",
+  "lastName": "Doe",
+  "email": "john@example.com",
+  "position": "Developer",
+  "departmentId": 1,
+  "salary": 50000
+}
+```
+
+### Step 2: Security Filter Checks Token
+The `JwtAuthenticationFilter` intercepts the request:
+1. Extracts the token from `Authorization` header
+2. Validates the token using `JwtUtil`
+3. If valid, sets the user as authenticated
+4. If invalid, returns 401 Unauthorized
+
+### Step 3: Controller Receives Request
+`EmployeeController.createEmployee()` is called:
+1. `@Valid` validates the input data (checks @NotBlank, @Email, etc.)
+2. If validation fails, returns 400 Bad Request
+3. If valid, calls `employeeService.createEmployee()`
+
+### Step 4: Service Processes Business Logic
+`EmployeeService.createEmployee()` executes:
+1. Checks if email already exists in database
+2. If exists, throws `BadRequestException`
+3. If not, converts DTO to Entity
+4. Calls `employeeRepository.save()`
+
+### Step 5: Repository Saves to Database
+`EmployeeRepository.save()` executes:
+1. Spring generates SQL: `INSERT INTO employees (...) VALUES (...)`
+2. Database executes the SQL
+3. Returns the saved employee with generated ID
+
+### Step 6: Service Returns Result
+`EmployeeService` converts Entity back to DTO and returns it.
+
+### Step 7: Controller Sends Response
+```
+HTTP 201 Created
+Content-Type: application/json
+
+{
+  "success": true,
+  "message": "Employee created successfully",
+  "data": {
+    "id": 1,
+    "firstName": "John",
+    "lastName": "Doe",
+    "email": "john@example.com",
+    ...
+  },
+  "timestamp": "2024-01-01T12:00:00",
+  "error": null
+}
+```
+
+---
+
+## Authentication Explained
+
+### What is JWT?
+
+JWT (JSON Web Token) is like a digital ID card. When you log in:
+1. Server verifies your username/password
+2. Server creates a token (JWT) with your info inside
+3. Server gives you the token
+4. You send this token with every subsequent request
+5. Server checks the token to verify it's really you
+
+### Authentication Flow
+
+#### 1. Login Request
+```
+POST /v1/auth/login
+{
+  "username": "admin",
+  "password": "admin123"
+}
+```
+
+#### 2. AuthController Handles Login
+```java
+@PostMapping("/login")
+public ResponseEntity<AuthResponse> login(@RequestBody AuthRequest authRequest) {
+    // Step 1: Authenticate username/password
+    Authentication authentication = authenticationManager.authenticate(
+        new UsernamePasswordAuthenticationToken(authRequest.getUsername(), authRequest.getPassword())
+    );
+    
+    // Step 2: Generate JWT token
+    UserDetails userDetails = (UserDetails) authentication.getPrincipal();
+    String token = jwtUtil.generateToken(userDetails);
+    
+    // Step 3: Return token
+    return ResponseEntity.ok(new AuthResponse(token, userDetails.getUsername()));
+}
+```
+
+#### 3. JwtUtil Generates Token
+```java
+public String generateToken(UserDetails userDetails) {
+    return Jwts.builder()
+        .setSubject(userDetails.getUsername())  // Store username in token
+        .setIssuedAt(new Date())                 // When token was created
+        .setExpiration(new Date(System.currentTimeMillis() + expiration))  // When it expires
+        .signWith(getSigningKey())               // Sign with secret key
+        .compact();
+}
+```
+
+**What's in the token:**
+- Username (who you are)
+- Issued date (when it was created)
+- Expiration date (when it expires)
+- Digital signature (proves it wasn't tampered with)
+
+#### 4. Client Stores Token
+The frontend stores the token (usually in localStorage or sessionStorage).
+
+#### 5. Client Sends Token with Requests
+```
+GET /v1/employees
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+#### 6. JwtAuthenticationFilter Validates Token
+```java
+@Override
+protected void doFilterInternal(HttpServletRequest request, ...) {
+    // Step 1: Extract token from Authorization header
+    String authorizationHeader = request.getHeader("Authorization");
+    String jwt = authorizationHeader.substring(7);  // Remove "Bearer "
+    
+    // Step 2: Extract username from token
+    String username = jwtUtil.extractUsername(jwt);
+    
+    // Step 3: Load user details from database
+    UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+    
+    // Step 4: Validate token
+    if (jwtUtil.validateToken(jwt, userDetails)) {
+        // Step 5: Set user as authenticated
+        SecurityContextHolder.getContext().setAuthentication(authToken);
+    }
+    
+    // Step 6: Continue to controller
+    filterChain.doFilter(request, response);
+}
+```
+
+#### 7. SecurityConfig Protects Endpoints
+```java
+@Bean
+public SecurityFilterChain securityFilterChain(HttpSecurity http) {
+    http
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers("/v1/auth/login").permitAll()  // Anyone can login
+            .anyRequest().authenticated()                  // Everything else needs token
+        )
+        .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+    
+    return http.build();
+}
+```
+
+**What this does:**
+- `/v1/auth/login` - No token required (public endpoint)
+- All other endpoints - Token required (protected endpoints)
+
+---
+
+## Code Breakdown by Layer
+
+### Entity Layer
+
+#### Employee.java
+```java
+@Entity                    // Maps to database table
+@Table(name = "employees") // Table name is "employees"
+@Data                      // Lombok: generates getters/setters
+@NoArgsConstructor         // Lombok: generates no-args constructor
+@AllArgsConstructor        // Lombok: generates all-args constructor
+@Builder                   // Lombok: generates builder pattern
+public class Employee {
+    
+    @Id                                          // Primary key
+    @GeneratedValue(strategy = GenerationType.IDENTITY)  // Auto-increment
+    private Long id;
+    
+    @NotBlank(message = "First name is required")  // Validation: not empty
+    @Size(min = 2, max = 50)                      // Validation: length 2-50
+    private String firstName;
+    
+    @Email(message = "Email should be valid")      // Validation: must be email
+    @Column(nullable = false, unique = true)       // Database: not null, unique
+    private String email;
+    
+    @ManyToOne(fetch = FetchType.LAZY)            // Many employees belong to one department
+    @JoinColumn(name = "department_id")           // Foreign key column
+    private Department department;
+    
+    @PreUpdate                                    // Called before update
+    protected void onUpdate() {
+        updatedAt = LocalDateTime.now();          // Auto-update timestamp
+    }
+}
+```
+
+**Key annotations explained:**
+- `@Entity` - This is a database table
+- `@Id` - This is the primary key
+- `@GeneratedValue` - Database generates this value automatically
+- `@Column` - Custom column settings
+- `@ManyToOne` - Relationship: many employees, one department
+- `@PreUpdate` - Lifecycle callback: runs before database update
+
+---
+
+### Repository Layer
+
+#### EmployeeRepository.java
+```java
+@Repository  // Marks this as a data access component
+public interface EmployeeRepository extends JpaRepository<Employee, Long> {
+    
+    // Spring automatically generates SQL for this:
+    // SELECT * FROM employees WHERE email = ?
+    Optional<Employee> findByEmail(String email);
+    
+    // Spring automatically generates SQL for this:
+    // SELECT * FROM employees WHERE department_id = ?
+    List<Employee> findByDepartmentId(Long departmentId);
+    
+    // Custom query using JPQL (Java Persistence Query Language)
+    @Query("SELECT e FROM Employee e WHERE e.isActive = true")
+    List<Employee> findAllActive();
+    
+    // Custom query with parameters
+    @Query("SELECT e FROM Employee e WHERE " +
+           "LOWER(e.firstName) LIKE LOWER(CONCAT('%', :searchTerm, '%')) OR " +
+           "LOWER(e.lastName) LIKE LOWER(CONCAT('%', :searchTerm, '%'))")
+    List<Employee> searchEmployees(@Param("searchTerm") String searchTerm);
+}
+```
+
+**Key concepts:**
+- **Interface, not class** - Spring implements it for you
+- **Method naming conventions** - Spring derives SQL from method names
+- **Optional** - May or may not contain a value (prevents NullPointerException)
+- **@Query** - Write custom SQL/JPQL when naming conventions aren't enough
+
+---
+
+### Service Layer
+
+#### EmployeeService.java
+```java
+@Service              // Marks this as a business logic component
+@Transactional         // All methods run in a database transaction
+public class EmployeeService {
+    
+    @Autowired  // Spring injects the repository automatically
+    private EmployeeRepository employeeRepository;
+    
+    @Autowired
+    private ModelMapper modelMapper;  // Converts between Entity and DTO
+    
+    public EmployeeDTO createEmployee(EmployeeDTO employeeDTO) {
+        // 1. Business logic: Check if email exists
+        if (employeeRepository.findByEmail(employeeDTO.getEmail()).isPresent()) {
+            throw new BadRequestException("Email already exists");
+        }
+        
+        // 2. Convert DTO to Entity
+        Employee employee = modelMapper.map(employeeDTO, Employee.class);
+        
+        // 3. Save to database (transaction commits here)
+        Employee savedEmployee = employeeRepository.save(employee);
+        
+        // 4. Convert Entity back to DTO
+        return mapToDTO(savedEmployee);
+    }
+    
+    @Transactional(readOnly = true)  // Optimization: read-only transaction
+    public List<EmployeeDTO> getAllEmployees() {
+        // Stream API: process each employee
+        return employeeRepository.findAll().stream()
+            .map(this::mapToDTO)      // Convert each to DTO
+            .collect(Collectors.toList());  // Collect into List
+    }
+    
+    private EmployeeDTO mapToDTO(Employee employee) {
+        EmployeeDTO dto = modelMapper.map(employee, EmployeeDTO.class);
+        // Add extra data not in entity
+        if (employee.getDepartment() != null) {
+            dto.setDepartmentName(employee.getDepartment().getName());
+        }
+        return dto;
+    }
+}
+```
+
+**Key concepts:**
+- **@Transactional** - Ensures all operations succeed or fail together
+- **@Autowired** - Dependency injection (Spring creates and provides objects)
+- **ModelMapper** - Automatically copies fields between similar objects
+- **Stream API** - Modern Java way to process collections
+- **Exception handling** - Throw exceptions for invalid operations
+
+---
+
+### Controller Layer
+
+#### EmployeeController.java
+```java
+@RestController                    // Handles HTTP requests
+@RequestMapping("/v1/employees")  // Base URL for all endpoints
+@CrossOrigin(origins = {"http://localhost:3000"})  // Allow frontend access
+public class EmployeeController {
+    
+    @Autowired
+    private EmployeeService employeeService;
+    
+    @PostMapping  // Responds to POST requests
+    public ResponseEntity<ApiResponse<EmployeeDTO>> createEmployee(
+            @Valid @RequestBody EmployeeDTO employeeDTO) {
+        
+        // @Valid triggers validation based on @NotBlank, @Email, etc.
+        // @RequestBody extracts JSON from request body
+        
+        EmployeeDTO createdEmployee = employeeService.createEmployee(employeeDTO);
+        
+        // Return HTTP 201 Created with success response
+        return ResponseEntity
+            .status(HttpStatus.CREATED)
+            .body(ApiResponse.success("Employee created successfully", createdEmployee));
+    }
+    
+    @GetMapping("/{id}")  // Responds to GET requests with path variable
+    public ResponseEntity<ApiResponse<EmployeeDTO>> getEmployeeById(
+            @PathVariable Long id) {  // @PathVariable extracts {id} from URL
+        
+        EmployeeDTO employee = employeeService.getEmployeeById(id);
+        
+        // Return HTTP 200 OK
+        return ResponseEntity.ok(ApiResponse.success("Employee fetched successfully", employee));
+    }
+    
+    @GetMapping  // Responds to GET requests
+    public ResponseEntity<ApiResponse<List<EmployeeDTO>>> getAllEmployees() {
+        List<EmployeeDTO> employees = employeeService.getAllEmployees();
+        return ResponseEntity.ok(ApiResponse.success("All employees fetched successfully", employees));
+    }
+    
+    @DeleteMapping("/{id}")  // Responds to DELETE requests
+    public ResponseEntity<ApiResponse<Void>> deleteEmployee(@PathVariable Long id) {
+        employeeService.deleteEmployee(id);
+        return ResponseEntity.ok(ApiResponse.success("Employee deleted successfully", null));
+    }
+}
+```
+
+**Key annotations:**
+- `@RestController` - Combines @Controller and @ResponseBody
+- `@RequestMapping` - Maps URL to controller/method
+- `@PostMapping` - Maps HTTP POST to method
+- `@GetMapping` - Maps HTTP GET to method
+- `@DeleteMapping` - Maps HTTP DELETE to method
+- `@PutMapping` - Maps HTTP PUT to method
+- `@PathVariable` - Extracts value from URL path
+- `@RequestBody` - Extracts JSON from request body
+- `@Valid` - Triggers validation
+- `@CrossOrigin` - Allows cross-origin requests (CORS)
+
+**HTTP Methods:**
+- **GET** - Retrieve data
+- **POST** - Create new data
+- **PUT** - Update existing data
+- **DELETE** - Remove data
+
+---
+
+### Security Layer
+
+#### SecurityConfig.java
+```java
+@Configuration        // Marks this as a configuration class
+@EnableWebSecurity     // Enables Spring Security
+public class SecurityConfig {
+    
+    private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    
+    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
+        this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+    }
+    
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) {
+        http
+            .csrf(csrf -> csrf.disable())  // Disable CSRF for stateless API
+            .sessionManagement(session -> 
+                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))  // No sessions
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/v1/auth/login").permitAll()  // Public endpoint
+                .requestMatchers("/h2-console/**").permitAll()   // H2 console access
+                .requestMatchers("/**", "OPTIONS").permitAll()   // Allow CORS pre-flight
+                .anyRequest().authenticated()                    // All others need auth
+            )
+            .addFilterBefore(jwtAuthenticationFilter, 
+                UsernamePasswordAuthenticationFilter.class);  // Add JWT filter
+        
+        http.headers(headers -> 
+            headers.frameOptions(frame -> frame.sameOrigin()));  // For H2 console
+        
+        return http.build();
+    }
+    
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();  // Password hashing
+    }
+}
+```
+
+**What this does:**
+- Disables CSRF (not needed for stateless JWT)
+- Makes sessions stateless (no server-side sessions)
+- Configures which endpoints are public vs protected
+- Adds JWT filter to check tokens
+- Configures password encoder for hashing
+
+---
+
+#### JwtAuthenticationFilter.java
+```java
+@Component  // Spring creates this bean automatically
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
+    
+    private final JwtUtil jwtUtil;
+    private final UserDetailsService userDetailsService;
+    
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, 
+                                    HttpServletResponse response, 
+                                    FilterChain filterChain) {
+        
+        // 1. Get Authorization header
+        String authorizationHeader = request.getHeader("Authorization");
+        
+        String jwt = null;
+        String username = null;
+        
+        // 2. Extract token if present
+        if (authorizationHeader != null && authorizationHeader.startsWith("Bearer ")) {
+            jwt = authorizationHeader.substring(7);  // Remove "Bearer "
+            username = jwtUtil.extractUsername(jwt);  // Extract username from token
+        }
+        
+        // 3. If token present and user not yet authenticated
+        if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+            // 4. Load user from database
+            UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+            
+            // 5. Validate token
+            if (jwtUtil.validateToken(jwt, userDetails)) {
+                // 6. Create authentication object
+                UsernamePasswordAuthenticationToken authToken = 
+                    new UsernamePasswordAuthenticationToken(
+                        userDetails, null, userDetails.getAuthorities());
+                
+                // 7. Set authentication in security context
+                SecurityContextHolder.getContext().setAuthentication(authToken);
+            }
+        }
+        
+        // 8. Continue to next filter/controller
+        filterChain.doFilter(request, response);
+    }
+}
+```
+
+**Filter chain concept:**
+- Requests pass through multiple filters before reaching the controller
+- Each filter can modify the request or response
+- Our JWT filter checks tokens before the request reaches the controller
+
+---
+
+#### JwtUtil.java
+```java
+@Component  // Spring creates this bean
+public class JwtUtil {
+    
+    @Value("${app.jwt.secret}")  // Read from application.yml
+    private String secret;
+    
+    @Value("${app.jwt.expiration}")
+    private Long expiration;
+    
+    // Extract username from token
+    public String extractUsername(String token) {
+        return extractClaim(token, Claims::getSubject);
+    }
+    
+    // Extract any claim from token
+    public <T> T extractClaim(String token, Function<Claims, T> claimsResolver) {
+        final Claims claims = extractAllClaims(token);
+        return claimsResolver.apply(claims);
+    }
+    
+    // Parse token and get all claims
+    private Claims extractAllClaims(String token) {
+        return Jwts.parser()
+            .verifyWith(getSigningKey())  // Verify signature
+            .build()
+            .parseSignedClaims(token)     // Parse token
+            .getPayload();                // Get claims
+    }
+    
+    // Generate signing key from secret
+    private SecretKey getSigningKey() {
+        byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
+        return Keys.hmacShaKeyFor(keyBytes);
+    }
+    
+    // Generate new token
+    public String generateToken(UserDetails userDetails) {
+        return Jwts.builder()
+            .setSubject(userDetails.getUsername())  // Username
+            .setIssuedAt(new Date())                 // Created at
+            .setExpiration(new Date(System.currentTimeMillis() + expiration))  // Expires at
+            .signWith(getSigningKey())               // Sign with secret
+            .compact();                             // Build token
+    }
+    
+    // Validate token
+    public Boolean validateToken(String token, UserDetails userDetails) {
+        final String username = extractUsername(token);
+        return (username.equals(userDetails.getUsername()) && !isTokenExpired(token));
+    }
+    
+    // Check if token is expired
+    private Boolean isTokenExpired(String token) {
+        return extractExpiration(token).before(new Date());
+    }
+}
+```
+
+**JWT structure:**
+```
+Header.Payload.Signature
+
+Example:
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImlhdCI6MTYzMDAwMDAwMCwiZXhwIjoxNjMwMDg2NDAwfQ.signature
+
+Header: Algorithm and token type
+Payload: Data (username, issued date, expiration)
+Signature: Digital signature (proves authenticity)
+```
+
+---
+
+## Common Patterns Explained
+
+### Dependency Injection (@Autowired)
+
+**What it is:** Spring creates objects for you and provides them where needed.
+
+**Without DI:**
+```java
+public class EmployeeService {
+    private EmployeeRepository employeeRepository = new EmployeeRepository();  // Bad: tight coupling
+}
+```
+
+**With DI:**
+```java
+public class EmployeeService {
+    @Autowired
+    private EmployeeRepository employeeRepository;  // Good: Spring provides it
+}
+```
+
+**Benefits:**
+- Loose coupling
+- Easy testing (can mock dependencies)
+- Spring manages lifecycle
+
+---
+
+### DTO Pattern
+
+**Why use DTOs instead of Entities directly?**
+
+1. **Security:** Don't expose internal fields (passwords, IDs)
+2. **Validation:** Different validation rules for input vs output
+3. **Flexibility:** Can combine data from multiple entities
+4. **API stability:** Can change entity without breaking API
+
+**Example:**
+```java
+// Entity (internal)
+@Entity
+public class Employee {
+    private Long id;
+    private String firstName;
+    private String password;  // Should not expose!
+    private Department department;
+}
+
+// DTO (external)
+public class EmployeeDTO {
+    private Long id;
+    private String firstName;
+    private String departmentName;  // Flattened relationship
+    // No password field!
+}
+```
+
+---
+
+### Exception Handling
+
+**Global Exception Handler:**
+```java
+@ControllerAdvice
+public class GlobalExceptionHandler {
+    
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ApiResponse> handleNotFound(ResourceNotFoundException ex) {
+        return ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .body(ApiResponse.error(ex.getMessage()));
+    }
+    
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ApiResponse> handleGeneral(Exception ex) {
+        return ResponseEntity
+            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(ApiResponse.error("Internal server error"));
+    }
+}
+```
+
+**Benefits:**
+- Centralized error handling
+- Consistent error responses
+- No try-catch in every controller
+
+---
+
+## Summary
+
+### Key Takeaways
+
+1. **Layers separate concerns:**
+   - Entity = Database structure
+   - Repository = Data access
+   - Service = Business logic
+   - Controller = HTTP handling
+
+2. **Spring Boot does the heavy lifting:**
+   - Auto-configuration
+   - Dependency injection
+   - SQL generation
+   - Security setup
+
+3. **JWT provides stateless authentication:**
+   - No server sessions
+   - Scalable
+   - Mobile-friendly
+
+4. **Best practices:**
+   - Use DTOs for API
+   - Validate input
+   - Handle exceptions globally
+   - Keep layers separate
+
+### Learning Path
+
+1. **Start with:** Controllers and simple CRUD operations
+2. **Then learn:** Services and business logic
+3. **Then learn:** Repositories and database operations
+4. **Finally:** Security and authentication
+
+### Resources for Further Learning
+
+- Spring Boot Documentation: https://spring.io/projects/spring-boot
+- Spring Security: https://spring.io/projects/spring-security
+- JWT: https://jwt.io/introduction
+- REST API Design: https://restfulapi.net/
+
+---
+
+## Quick Reference
+
+### HTTP Methods
+- `GET` - Retrieve
+- `POST` - Create
+- `PUT` - Update
+- `DELETE` - Remove
+
+### HTTP Status Codes
+- `200 OK` - Success
+- `201 Created` - Resource created
+- `400 Bad Request` - Invalid input
+- `401 Unauthorized` - Not authenticated
+- `403 Forbidden` - No permission
+- `404 Not Found` - Resource doesn't exist
+- `500 Internal Server Error` - Server error
+
+### Common Annotations
+- `@Entity` - Database table
+- `@Repository` - Data access
+- `@Service` - Business logic
+- `@Controller` - HTTP handler
+- `@RestController` - REST API handler
+- `@Autowired` - Dependency injection
+- `@Transactional` - Database transaction
+- `@Valid` - Validation trigger
+
+---
+
+This document should give you a solid understanding of how the backend works. Feel free to ask questions about any specific part!
